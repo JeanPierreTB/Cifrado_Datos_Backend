@@ -1,0 +1,16 @@
+# Excluir node_modules
+node_modules/
+
+# Excluir archivos de compilación de TypeScript
+dist/
+
+# Excluir archivos de entorno
+.env
+
+# Excluir logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Excluir directorios del editor (por ejemplo, VSCode)
+.vscode/
