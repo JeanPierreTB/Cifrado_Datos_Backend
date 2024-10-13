@@ -1,25 +1,18 @@
-// models.ts
 import { DataTypes } from 'sequelize';
 import { sequelize } from '../database/database'
 
-// Definición del modelo de usuario
 const User = sequelize.define('User', {
-  username: {
-    type: DataTypes.STRING,
+  email: {
+    type: DataTypes.TEXT,
     allowNull: false,
     primaryKey: true,
   },
   password: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
     allowNull: false,
-  },
-  pin: {
-    type: DataTypes.STRING,
-    allowNull: true,
-  },
+  }
 });
 
-// Función para crear las tablas
 const createTables = async () => {
   try {
     await sequelize.sync();

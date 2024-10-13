@@ -1,128 +1,99 @@
 import express, { Request, Response } from 'express';
+import cors from 'cors';
 import crypto from 'crypto';
-import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
 import { User, createTables } from '../models/Usuario';
 import { connectToDatabase } from '../database/database';
+import { sequelize, QueryTypes } from '../database/database'; // Asegúrate de importar QueryTypes
+import https from 'https';
+import fs from 'fs';
+import { EncryptedPasswordResponse } from './interfaces';
+import { IsValidResponse } from './interfaces';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = 3001;
 
+// Carga los certificados SSL
+const sslPrivateKey = fs.readFileSync('./config/private.key', 'utf8');  
+const sslCertificate = fs.readFileSync('./config/certificate.crt', 'utf8'); 
+const credentials = { key: sslPrivateKey, cert: sslCertificate };
 
-
-// Configuración del cifrado asimétrico RSA
-const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-  modulusLength: 2048,
-});
-
-// Middleware para manejar JSON
+app.use(cors());
 app.use(express.json());
 
 app.get('/', async (req: Request, res: Response) => {
   res.send("Bienvenido al servidor");
 });
 
-// Ruta para registro con hashing de contraseña (bcrypt)
-app.post('/register', async (req: Request, res: Response) => {
-  const { username, password } = req.body;
+// Generar par de claves RSA
+const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+});
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
+
+
+app.post('/register', async (req: Request, res: Response) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
   }
 
-  // Hashing de la contraseña
-  const hashedPassword = await bcrypt.hash(password, 10);
+  // Cifrar la contraseña usando pgcrypto
+  const encryptedPassword = (await sequelize.query<EncryptedPasswordResponse>(
+    'SELECT crypt($1, gen_salt(\'bf\')) AS encrypted_password',
+    {
+      bind: [password],
+      type: QueryTypes.SELECT, // Usar QueryTypes
+    }
+  ))[0].encrypted_password;
 
-  // Guardar el usuario con la contraseña hasheada en la base de datos
   try {
-    const user = await User.create({ username, password: hashedPassword });
+    const user = await User.create({ email, password: encryptedPassword });
     res.status(201).json({ message: 'User registered successfully', user });
   } catch (error) {
     res.status(500).json({ error: 'Error creating user', details: error });
   }
 });
 
-// Ruta para login verificando con bcrypt
 app.post('/login', async (req: Request, res: Response) => {
-  const { username, password } = req.body;
+  const { email, password } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
   }
 
-  // Verificar si el usuario existe en la base de datos
-  const user:any = await User.findOne({ where: { username } });
+  const user: any = await User.findOne({ where: { email } });
   if (!user) {
     return res.status(400).json({ error: 'User not found' });
   }
 
-  // Comparar la contraseña con bcrypt
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) {
+  // Verificar la contraseña cifrada usando pgcrypto
+  const isPasswordValid = await sequelize.query<IsValidResponse>(
+    'SELECT crypt($1, password) AS is_valid FROM "Users" WHERE "email" = $2',
+    {
+      bind: [password, email],  // Cambia esto para usar bind con email
+      type: QueryTypes.SELECT,
+    }
+  );
+
+  if (!isPasswordValid[0].is_valid) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // Generar un token JWT como ejemplo de autenticación
-  const token = jwt.sign({ username }, 'secretKey', { expiresIn: '1h' });
-
-  res.json({ message: 'Login successful', token });
+  res.json({ message: 'Login successful' });
 });
 
-// Endpoint para establecer un PIN de seguridad (hashing con bcrypt)
-app.post('/set-pin', async (req: Request, res: Response) => {
-  const { username, pin } = req.body;
 
-  if (!username || !pin) {
-    return res.status(400).json({ error: 'Username and PIN are required' });
-  }
 
-  // Hashing del PIN
-  const hashedPin = await bcrypt.hash(pin, 10);
-
-  // Actualizar el usuario con el PIN hasheado
-  try {
-    await User.update({ pin: hashedPin }, { where: { username } });
-    res.status(201).json({ message: 'PIN set successfully' });
-  } catch (error) {
-    res.status(500).json({ error: 'Error setting PIN', details: error });
-  }
-});
-
-// Endpoint para verificar el PIN (hashing con bcrypt)
-app.post('/verify-pin', async (req: Request, res: Response) => {
-  const { username, pin } = req.body;
-
-  if (!username || !pin) {
-    return res.status(400).json({ error: 'Username and PIN are required' });
-  }
-
-  // Verificar si el usuario existe en la base de datos
-  const user:any = await User.findOne({ where: { username } });
-  if (!user || !user.pin) {
-    return res.status(400).json({ error: 'PIN not set for this user' });
-  }
-
-  // Comparar el PIN ingresado con el hasheado
-  const isMatch = await bcrypt.compare(pin, user.pin);
-  if (!isMatch) {
-    return res.status(401).json({ error: 'Invalid PIN' });
-  }
-
-  res.json({ message: 'PIN verified successfully' });
-});
-
-// Ruta para cifrar datos de la tarjeta de crédito con RSA
 app.post('/pay', (req: Request, res: Response) => {
-  const { cardNumber, cardHolder, expiryDate, cvv } = req.body;
+  const { cardNumber, cardName, expiryDate, cvv } = req.body;
 
-  if (!cardNumber || !cardHolder || !expiryDate || !cvv) {
+  if (!cardNumber || !cardName || !expiryDate || !cvv) {
     return res.status(400).json({ error: 'All card details are required' });
   }
 
-  // Crear un objeto con los datos de la tarjeta
-  const cardDetails = JSON.stringify({ cardNumber, cardHolder, expiryDate, cvv });
+  const cardDetails = JSON.stringify({ cardNumber, cardName, expiryDate, cvv });
 
-  // Cifrar los datos de la tarjeta con la clave pública (RSA)
   const encryptedCardDetails = crypto.publicEncrypt(publicKey, Buffer.from(cardDetails));
 
   res.json({
@@ -131,7 +102,6 @@ app.post('/pay', (req: Request, res: Response) => {
   });
 });
 
-// Ruta para descifrar los datos de la tarjeta de crédito (solo para pruebas)
 app.post('/decrypt-card', (req: Request, res: Response) => {
   const { encryptedCardDetails } = req.body;
 
@@ -139,7 +109,6 @@ app.post('/decrypt-card', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Encrypted card details are required' });
   }
 
-  // Descifrar los datos de la tarjeta con la clave privada (RSA)
   const decryptedCardDetails = crypto.privateDecrypt(privateKey, Buffer.from(encryptedCardDetails, 'base64'));
 
   res.json({
@@ -148,12 +117,14 @@ app.post('/decrypt-card', (req: Request, res: Response) => {
   });
 });
 
+// Inicia el servidor HTTPS
 const startServer = async () => {
   await connectToDatabase();
   await createTables();
 
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const httpsServer = https.createServer(credentials, app);
+  httpsServer.listen(PORT, () => {
+    console.log(`Server running on https://localhost:${PORT}`);
   });
 };
 
